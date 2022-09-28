@@ -28,7 +28,7 @@ impl HelloWorld {
 
 #[derive(NativeClass)]
 #[inherit(Resource)]
-pub struct MusicSample {
+pub struct MusicClip {
     #[property]
     audio: Option<Ref<AudioStreamSample>>,
     #[property]
@@ -38,7 +38,7 @@ pub struct MusicSample {
 }
 
 #[methods]
-impl MusicSample {
+impl MusicClip {
     pub fn new(_base: &Resource) -> Self {
         Self {
             audio: None,
@@ -46,90 +46,25 @@ impl MusicSample {
             first_beat_sample: 0,
         }
     }
-}
-
-enum MusicBufferContent {
-    Static(Instance<MusicSample>),
-    Dynamic {
-        audio: Vector2Array,
-        samples_per_beat: i32,
-        first_beat_sample: i32,
-    },
-}
-
-#[derive(NativeClass)]
-#[inherit(Reference)]
-pub struct MusicBuffer {
-    content: MusicBufferContent,
-}
-
-#[methods]
-impl MusicBuffer {
-    fn new(_base: &Reference) -> Self {
-        MusicBuffer {
-            content: MusicBufferContent::Dynamic {
-                audio: Vector2Array::from_iter(std::iter::empty()),
-                samples_per_beat: 22050,
-                first_beat_sample: 0,
-            },
-        }
-    }
-
-    #[method]
-    fn load_sample_data(&mut self, from: Instance<MusicSample>) {
-        self.content = MusicBufferContent::Static(from)
-    }
-
-    #[method]
-    fn samples_per_beat(&self) -> i32 {
-        match &self.content {
-            MusicBufferContent::Static(sample) => {
-                let sample = unsafe { sample.assume_safe() };
-                let value = sample.map(|sample, _base| sample.samples_per_beat);
-                value.unwrap()
-            }
-            MusicBufferContent::Dynamic {
-                samples_per_beat, ..
-            } => *samples_per_beat,
-        }
-    }
-
-    #[method]
-    fn first_beat_sample(&self) -> i32 {
-        match &self.content {
-            MusicBufferContent::Static(sample) => {
-                let sample = unsafe { sample.assume_safe() };
-                let value = sample.map(|sample, _base| sample.first_beat_sample);
-                value.unwrap()
-            }
-            MusicBufferContent::Dynamic {
-                first_beat_sample, ..
-            } => *first_beat_sample,
-        }
-    }
 
     #[method]
     fn num_samples(&self) -> i32 {
-        match &self.content {
-            MusicBufferContent::Static(sample) => {
-                let sample = unsafe { sample.assume_safe() };
-                let sample = sample.map(|sample, _base| sample.audio.clone());
-                let sample = sample.unwrap().unwrap();
-                let sample = unsafe { sample.assume_safe() };
-                sample.data().len() / 4
-            }
-            MusicBufferContent::Dynamic { audio, .. } => audio.len(),
+        if let Some(sample) = &self.audio {
+            let sample = unsafe { sample.assume_safe() };
+            sample.data().len() / 4
+        } else {
+            0
         }
     }
 
     #[method]
     fn beat_time(&self) -> f64 {
-        self.samples_per_beat() as f64 / 44100.0
+        self.samples_per_beat as f64 / 44100.0
     }
 
     #[method]
     fn start_time(&self) -> f64 {
-        self.first_beat_sample() as f64 / 44100.0
+        self.first_beat_sample as f64 / 44100.0
     }
 
     #[method]
@@ -139,68 +74,40 @@ impl MusicBuffer {
 
     #[method]
     fn beats(&self) -> f64 {
-        (self.num_samples() - self.first_beat_sample()) as f64 / self.samples_per_beat() as f64
+        (self.num_samples() - self.first_beat_sample) as f64 / self.samples_per_beat as f64
     }
 
     #[method]
     fn play_audio(&self, output: Ref<AudioStreamPlayer3D>) {
         let output = unsafe { output.assume_safe() };
-        match &self.content {
-            MusicBufferContent::Static(sample) => {
-                let sample = unsafe { sample.assume_safe() };
-                let sample = sample.map(|sample, _base| sample.audio.clone());
-                output.set_stream(sample.unwrap().unwrap())
-            }
-            MusicBufferContent::Dynamic { audio, .. } => {
-                let sample = AudioStreamGenerator::new();
-                sample.set_buffer_length(audio.len() as f64 / 44100.0);
-                output.set_stream(sample);
-                let playback = output.get_stream_playback().unwrap();
-                let playback = playback.try_cast::<AudioStreamGeneratorPlayback>().unwrap();
-                let playback = unsafe { playback.assume_safe() };
-                playback.push_buffer(audio.clone());
-            }
+        if let Some(sample) = &self.audio {
+            output.set_stream(sample)
         }
     }
 
     #[method]
     fn trim(&self, start: f64, end: f64) -> Instance<Self, Unique> {
-        let start_sample = (self.samples_per_beat() as f64 * start) as i32 + self.first_beat_sample();
-        let end_sample = (self.samples_per_beat() as f64 * end) as i32 + self.first_beat_sample();
-        let mut result = Vector2Array::new();
-        match &self.content {
-            MusicBufferContent::Static(sample) => {
-                let sample = unsafe { sample.assume_safe() };
-                let sample = sample.map(|sample, _base| sample.audio.clone());
-                let sample = sample.unwrap().unwrap();
-                let sample = unsafe { sample.assume_safe() };
-                let pcm_data = sample.data();
-                for i in start_sample..end_sample {
-                    let byte_index = i * 4;
-                    assert!(byte_index < pcm_data.len());
-                    let left = pcm_sample_to_float(
-                        pcm_data.get(byte_index + 0),
-                        pcm_data.get(byte_index + 1),
-                    );
-                    let right = pcm_sample_to_float(
-                        pcm_data.get(byte_index + 2),
-                        pcm_data.get(byte_index + 3),
-                    );
-                    result.push(Vector2::new(left, right));
-                }
-            }
-            MusicBufferContent::Dynamic { audio, .. } => {
-                for i in start_sample..end_sample {
-                    result.push(audio.get(i));
-                }
+        let start_sample = (self.samples_per_beat as f64 * start) as i32 + self.first_beat_sample;
+        let end_sample = (self.samples_per_beat as f64 * end) as i32 + self.first_beat_sample;
+        let mut data = ByteArray::new();
+        if let Some(sample) = &self.audio {
+            let sample = unsafe { sample.assume_safe() };
+            let pcm_data = sample.data();
+            for i in start_sample * 4..end_sample * 4 {
+                assert!(i < pcm_data.len());
+                data.push(pcm_data.get(i));
             }
         }
+        let result = AudioStreamSample::new();
+        result.set_format(AudioStreamSample::FORMAT_16_BITS);
+        result.set_mix_rate(44100);
+        result.set_stereo(true);
+        result.set_loop_mode(AudioStreamSample::LOOP_DISABLED);
+        result.set_data(data);
         Instance::emplace(Self {
-            content: MusicBufferContent::Dynamic {
-                audio: result,
-                samples_per_beat: self.samples_per_beat(),
-                first_beat_sample: (start_sample - self.first_beat_sample()) % self.samples_per_beat(),
-            },
+            audio: Some(result.into_shared()),
+            samples_per_beat: self.samples_per_beat,
+            first_beat_sample: (start_sample - self.first_beat_sample) % self.samples_per_beat,
         })
     }
 }
@@ -211,8 +118,7 @@ fn pcm_sample_to_float(byte0: u8, byte1: u8) -> f32 {
 }
 
 fn init(handle: InitHandle) {
-    handle.add_class::<MusicSample>();
-    handle.add_class::<MusicBuffer>();
+    handle.add_class::<MusicClip>();
 }
 
 godot_init!(init);
