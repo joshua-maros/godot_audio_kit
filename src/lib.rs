@@ -1,4 +1,4 @@
-use std::f32::consts::TAU;
+use std::{cell::Cell, f32::consts::TAU};
 
 use az::WrappingCast;
 use gdnative::{
@@ -31,6 +31,7 @@ impl HelloWorld {
 pub struct MusicClip {
     #[property]
     audio: Option<Ref<AudioStreamSample>>,
+    samples: Cell<Option<i32>>,
     #[property]
     samples_per_beat: i32,
     #[property]
@@ -42,6 +43,7 @@ impl MusicClip {
     pub fn new(_base: &Resource) -> Self {
         Self {
             audio: None,
+            samples: Cell::new(None),
             samples_per_beat: 22050,
             first_beat_sample: 0,
         }
@@ -49,11 +51,17 @@ impl MusicClip {
 
     #[method]
     fn num_samples(&self) -> i32 {
-        if let Some(sample) = &self.audio {
-            let sample = unsafe { sample.assume_safe() };
-            sample.data().len() / 4
+        if let Some(samples) = self.samples.get() {
+            samples
         } else {
-            0
+            let samples = if let Some(sample) = &self.audio {
+                let sample = unsafe { sample.assume_safe() };
+                sample.data().len() / 4
+            } else {
+                0
+            };
+            self.samples.set(Some(samples));
+            samples
         }
     }
 
@@ -98,6 +106,7 @@ impl MusicClip {
                 data.push(pcm_data.get(i));
             }
         }
+        let len = data.len();
         let result = AudioStreamSample::new();
         result.set_format(AudioStreamSample::FORMAT_16_BITS);
         result.set_mix_rate(44100);
@@ -106,6 +115,7 @@ impl MusicClip {
         result.set_data(data);
         Instance::emplace(Self {
             audio: Some(result.into_shared()),
+            samples: Cell::new(Some(len / 4)),
             samples_per_beat: self.samples_per_beat,
             first_beat_sample: (start_sample - self.first_beat_sample) % self.samples_per_beat,
         })
