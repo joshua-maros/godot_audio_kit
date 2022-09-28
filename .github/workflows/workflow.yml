@@ -16,10 +16,8 @@ jobs:
 
     steps:
     - uses: actions/checkout@v3
-    - name: Debugging with ssh
-      uses: lhotari/action-upterm@v1
-      with:
-        limit-access-to-actor: true
+    - name: Setup
+      run: sudo apt install llvm clang
     - name: Build
       run: cargo build --verbose --release
     - name: Upload Result
@@ -36,8 +34,8 @@ jobs:
 
     steps:
     - uses: actions/checkout@v3
-    - name: Debugging with ssh
-      uses: lhotari/action-upterm@v1
+    - name: Install Rust
+      run: brew install rust
     - name: Build
       run: cargo build --verbose --release
     - name: Upload Result
