@@ -117,7 +117,7 @@ impl MusicClip {
             audio: Some(result.into_shared()),
             samples: Cell::new(Some(len / 4)),
             samples_per_beat: self.samples_per_beat,
-            first_beat_sample: (start_sample - self.first_beat_sample) % self.samples_per_beat,
+            first_beat_sample: 0,
         })
     }
 }
