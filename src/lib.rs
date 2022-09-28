@@ -138,6 +138,11 @@ impl MusicBuffer {
     }
 
     #[method]
+    fn beats(&self) -> f64 {
+        (self.num_samples() - self.first_beat_sample()) as f64 / self.samples_per_beat() as f64
+    }
+
+    #[method]
     fn play_audio(&self, output: Ref<AudioStreamPlayer3D>) {
         let output = unsafe { output.assume_safe() };
         match &self.content {
@@ -160,10 +165,8 @@ impl MusicBuffer {
 
     #[method]
     fn trim(&self, start: f64, end: f64) -> Instance<Self, Unique> {
-        let start = start - self.start_time();
-        let end = end - self.start_time();
-        let start = (self.samples_per_beat() as f64 * start) as i32 + self.first_beat_sample();
-        let end = (self.samples_per_beat() as f64 * end) as i32 + self.first_beat_sample();
+        let start_sample = (self.samples_per_beat() as f64 * start) as i32 + self.first_beat_sample();
+        let end_sample = (self.samples_per_beat() as f64 * end) as i32 + self.first_beat_sample();
         let mut result = Vector2Array::new();
         match &self.content {
             MusicBufferContent::Static(sample) => {
@@ -172,7 +175,7 @@ impl MusicBuffer {
                 let sample = sample.unwrap().unwrap();
                 let sample = unsafe { sample.assume_safe() };
                 let pcm_data = sample.data();
-                for i in start..end {
+                for i in start_sample..end_sample {
                     let byte_index = i * 4;
                     assert!(byte_index < pcm_data.len());
                     let left = pcm_sample_to_float(
@@ -187,16 +190,16 @@ impl MusicBuffer {
                 }
             }
             MusicBufferContent::Dynamic { audio, .. } => {
-                for i in start..end {
+                for i in start_sample..end_sample {
                     result.push(audio.get(i));
                 }
             }
         }
         Instance::emplace(Self {
             content: MusicBufferContent::Dynamic {
-                audio: Vector2Array::new(),
+                audio: result,
                 samples_per_beat: self.samples_per_beat(),
-                first_beat_sample: self.first_beat_sample(),
+                first_beat_sample: (start_sample - self.first_beat_sample()) % self.samples_per_beat(),
             },
         })
     }
@@ -207,27 +210,9 @@ fn pcm_sample_to_float(byte0: u8, byte1: u8) -> f32 {
     byte1 as f32 / 128.0 + byte0 as f32 / (65536.0 / 2.0)
 }
 
-#[derive(NativeClass)]
-#[inherit(Reference)]
-struct Dummy(Vector2Array);
-
-#[methods]
-impl Dummy {
-    fn new(_base: &Reference) -> Self {
-        Self(Vector2Array::from_iter(std::iter::empty()))
-    }
-
-    #[method]
-    fn make(&self) -> Instance<Self, Unique> {
-        println!("{:#?}", self.0);
-        Instance::emplace(Self(Vector2Array::from_iter(std::iter::empty())))
-    }
-}
-
 fn init(handle: InitHandle) {
     handle.add_class::<MusicSample>();
     handle.add_class::<MusicBuffer>();
-    handle.add_class::<Dummy>();
 }
 
 godot_init!(init);
