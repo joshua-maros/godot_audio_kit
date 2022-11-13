@@ -10,6 +10,8 @@ use gdnative::{
     prelude::*,
 };
 
+const GET: i32 = 700;
+
 #[derive(NativeClass)]
 #[inherit(Resource)]
 pub struct HelloWorld;
@@ -26,52 +28,107 @@ impl HelloWorld {
     }
 }
 
+/// Music provided by the game.
 #[derive(NativeClass)]
 #[inherit(Resource)]
-pub struct MusicClip {
+pub struct ProvidedMusicClip {
     #[property]
-    audio: Ref<AudioStreamSample>,
-    samples: Cell<Option<i32>>,
+    audio_stream: Ref<AudioStreamSample>,
     #[property]
-    samples_per_beat: i32,
+    samples_per_beat: u32,
     #[property]
-    first_beat_sample: i32,
+    first_beat_sample: u32,
 }
 
 #[methods]
-impl MusicClip {
+impl ProvidedMusicClip {
     pub fn new(_base: &Resource) -> Self {
-        let data = ByteArray::new();
-        let audio = AudioStreamSample::new();
-        audio.set_format(AudioStreamSample::FORMAT_16_BITS);
-        audio.set_mix_rate(44100);
-        audio.set_stereo(true);
-        audio.set_loop_mode(AudioStreamSample::LOOP_DISABLED);
-        audio.set_data(data);
-        let audio = audio.into_shared();
         Self {
-            audio,
-            samples: Cell::new(None),
+            audio_stream: AudioStreamSample::new().into_shared(),
             samples_per_beat: 22050,
             first_beat_sample: 0,
         }
     }
 
     #[method]
-    fn num_samples(&self) -> i32 {
-        if let Some(samples) = self.samples.get() {
-            samples
-        } else {
-            let audio = unsafe { self.audio.assume_safe() };
-            let samples = audio.data().len() / 4;
-            self.samples.set(Some(samples));
-            samples
+    pub fn as_music_clip(&self) -> Instance<MusicClip> {
+        let mut float_data = Vec::new();
+        let audio_stream = unsafe { self.audio_stream.assume_safe() };
+        let pcm_data = audio_stream.data();
+        let mut d = Vec::new();
+        for index in GET..GET + 16 {
+            d.push(pcm_data.get(index));
         }
+        for sample_index in 0..pcm_data.len() / 4 {
+            let [b0, b1, b2, b3] = [
+                pcm_data.get(sample_index * 4 + 0),
+                pcm_data.get(sample_index * 4 + 1),
+                pcm_data.get(sample_index * 4 + 2),
+                pcm_data.get(sample_index * 4 + 3),
+            ];
+            float_data.push((pcm_sample_to_float(b0, b1), pcm_sample_to_float(b2, b3)))
+        }
+        Instance::emplace(MusicClip {
+            audio_data: float_data,
+            // Make a new one so that we don't stomp over the original when this clip gets edited.
+            audio_stream: make_default_audio_stream(),
+            audio_stream_dirty: true,
+            samples_per_beat: self.samples_per_beat,
+            first_beat_sample: self.first_beat_sample,
+        })
+        .into_shared()
+    }
+}
+
+#[derive(NativeClass)]
+#[inherit(Resource)]
+pub struct MusicClip {
+    audio_data: Vec<(f32, f32)>,
+    #[property]
+    audio_stream: Ref<AudioStreamSample>,
+    audio_stream_dirty: bool,
+    #[property]
+    samples_per_beat: u32,
+    #[property]
+    first_beat_sample: u32,
+}
+
+fn make_default_audio_stream() -> Ref<AudioStreamSample> {
+    let data = ByteArray::new();
+    let audio_stream = AudioStreamSample::new();
+    audio_stream.set_format(AudioStreamSample::FORMAT_16_BITS);
+    audio_stream.set_mix_rate(44100);
+    audio_stream.set_stereo(true);
+    audio_stream.set_loop_mode(AudioStreamSample::LOOP_DISABLED);
+    audio_stream.set_data(data);
+    audio_stream.into_shared()
+}
+
+#[methods]
+impl MusicClip {
+    pub fn new(_base: &Resource) -> Self {
+        Self {
+            audio_data: vec![],
+            audio_stream: make_default_audio_stream(),
+            audio_stream_dirty: false,
+            samples_per_beat: 22050,
+            first_beat_sample: 0,
+        }
+    }
+
+    #[method]
+    fn num_samples(&self) -> usize {
+        self.audio_data.len()
     }
 
     #[method]
     fn beat_time(&self) -> f64 {
         self.samples_per_beat as f64 / 44100.0
+    }
+
+    #[method]
+    fn set_beat_time(&mut self, beat_time: f64) {
+        self.samples_per_beat = (beat_time * 44100.0) as _;
     }
 
     #[method]
@@ -86,26 +143,44 @@ impl MusicClip {
 
     #[method]
     fn beats(&self) -> f64 {
-        (self.num_samples() - self.first_beat_sample) as f64 / self.samples_per_beat as f64
+        (self.num_samples() - self.first_beat_sample as usize) as f64 / self.samples_per_beat as f64
     }
 
     #[method]
-    fn beat_to_sample(&self, beat: f64) -> i32 {
-        (self.samples_per_beat as f64 * beat) as i32 + self.first_beat_sample
+    fn beat_to_sample(&self, beat: f64) -> usize {
+        (self.samples_per_beat as f64 * beat) as usize + self.first_beat_sample as usize
     }
 
     #[method]
-    fn play_audio(&self, output: Ref<AudioStreamPlayer3D>) {
+    fn play_audio(&mut self, output: Ref<AudioStreamPlayer3D>) {
+        if self.audio_stream_dirty {
+            self.audio_stream_dirty = false;
+            let mut data = ByteArray::new();
+            for &(left, right) in &self.audio_data {
+                let (a, b) = float_sample_to_pcm(left);
+                data.push(a);
+                data.push(b);
+                let (a, b) = float_sample_to_pcm(right);
+                data.push(a);
+                data.push(b);
+            }
+            let mut d = Vec::new();
+            for index in GET..GET + 16 {
+                d.push(data.get(index));
+            }
+            unsafe { self.audio_stream.assume_safe() }.set_data(data);
+        }
         let output = unsafe { output.assume_safe() };
-        output.set_stream(&self.audio)
+        output.set_stream(&self.audio_stream)
     }
 
     #[method]
     fn set_looping(&self, looping: bool) {
-        let audio = unsafe { self.audio.assume_safe() };
+        let audio = unsafe { self.audio_stream.assume_safe() };
         audio.set_loop_begin(self.first_beat_sample as _);
-        let duration = self.num_samples() - self.first_beat_sample;
-        let end = self.first_beat_sample + duration - duration % self.samples_per_beat;
+        let duration = self.num_samples() - self.first_beat_sample as usize;
+        let end =
+            self.first_beat_sample as usize + duration - duration % self.samples_per_beat as usize;
         audio.set_loop_end(end as _);
         audio.set_loop_mode(if looping {
             LoopMode::FORWARD.0
@@ -116,30 +191,18 @@ impl MusicClip {
 
     #[method]
     fn is_looping(&self) -> bool {
-        unsafe { self.audio.assume_safe() }.loop_mode() != LoopMode::DISABLED
+        unsafe { self.audio_stream.assume_safe() }.loop_mode() != LoopMode::DISABLED
     }
 
     #[method]
     fn trim(&self, start: f64, end: f64) -> Instance<Self, Unique> {
         let start_sample = self.beat_to_sample(start);
         let end_sample = self.beat_to_sample(end);
-        let mut data = ByteArray::new();
-        let audio = unsafe { self.audio.assume_safe() };
-        let pcm_data = audio.data();
-        for i in start_sample * 4..end_sample * 4 {
-            assert!(i < pcm_data.len());
-            data.push(pcm_data.get(i));
-        }
-        let len = data.len();
-        let result = AudioStreamSample::new();
-        result.set_format(AudioStreamSample::FORMAT_16_BITS);
-        result.set_mix_rate(44100);
-        result.set_stereo(true);
-        result.set_loop_mode(AudioStreamSample::LOOP_DISABLED);
-        result.set_data(data);
+        let audio_data = Vec::from(&self.audio_data[start_sample..end_sample]);
         Instance::emplace(Self {
-            audio: result.into_shared(),
-            samples: Cell::new(Some(len / 4)),
+            audio_data,
+            audio_stream: make_default_audio_stream(),
+            audio_stream_dirty: true,
             samples_per_beat: self.samples_per_beat,
             first_beat_sample: 0,
         })
@@ -147,7 +210,7 @@ impl MusicClip {
 
     #[method]
     fn write_sample(
-        &self,
+        &mut self,
         target_start: f64,
         source: Instance<MusicClip>,
         source_start: f64,
@@ -165,70 +228,52 @@ impl MusicClip {
             .unwrap();
         source
             .map(|source, _res| {
-                let source_audio = unsafe { source.audio.assume_safe() };
-                let target_audio = unsafe { self.audio.assume_safe() };
-                let mut target_data = target_audio.data();
-                let source_data = source_audio.data();
+                let source_audio = &source.audio_data;
+                let target_audio = &mut self.audio_data;
 
                 let source_len = source_end - source_start;
-                let source_len = source_len.min(source_data.len() / 4 - source_start);
+                let source_len = source_len.min(source.num_samples() - source_start);
                 let target_len = source_len;
                 let target_end = target_start + target_len;
 
-                while target_data.len() < target_end * 4 {
-                    target_data.push(0);
+                if target_audio.len() < target_end {
+                    target_audio.resize(target_end, (0.0, 0.0));
                 }
-                debug_assert!(target_data.len() >= target_end * 4);
 
                 for offset in 0..target_len {
                     let source_index = source_start + offset;
                     let target_index = target_start + offset;
-                    for byte in 0..4 {
-                        debug_assert!(target_index * 4 + byte < target_end * 4);
-                        debug_assert!(source_index * 4 + byte < source_end * 4);
-                        target_data.set(
-                            target_index * 4 + byte,
-                            source_data.get(source_index * 4 + byte),
-                        );
-                    }
+                    target_audio[target_index] = source_audio[source_index];
                 }
-                self.samples.set(Some(target_data.len() / 4));
-                target_audio.set_data(target_data);
             })
             .unwrap();
-        godot_print!("alskjdflaksjdf");
+        self.audio_stream_dirty = true;
     }
 
     #[method]
-    fn write_silence(&self, start: f64, end: f64) {
+    fn write_silence(&mut self, start: f64, end: f64) {
         let start = self.beat_to_sample(start);
         let end = self.beat_to_sample(end);
-        let target_audio = unsafe { self.audio.assume_safe() };
-        let mut target_data = target_audio.data();
 
         let target_len = end - start;
+        let target_audio = &mut self.audio_data;
 
-        while target_data.len() < end * 4 {
-            target_data.push(0);
+        if target_audio.len() < end {
+            target_audio.resize(end, (0.0, 0.0));
         }
-        debug_assert!(target_data.len() >= end * 4);
 
         for offset in 0..target_len {
             let target_index = start + offset;
-            for byte in 0..4 {
-                debug_assert!(target_index * 4 + byte < end * 4);
-                target_data.set(target_index * 4 + byte, 0);
-            }
+            target_audio[target_index] = (0.0, 0.0);
         }
-        self.samples.set(Some(target_data.len() / 4));
-        target_audio.set_data(target_data);
+
+        self.audio_stream_dirty = true;
     }
 
     #[method]
-    fn clear(&self) {
-        let target_audio = unsafe { self.audio.assume_safe() };
-        target_audio.set_data(ByteArray::new());
-        self.samples.set(Some(target_audio.data().len()));
+    fn clear(&mut self) {
+        self.audio_data.clear();
+        self.audio_stream_dirty = true;
     }
 }
 
@@ -237,8 +282,15 @@ fn pcm_sample_to_float(byte0: u8, byte1: u8) -> f32 {
     byte1 as f32 / 128.0 + byte0 as f32 / (65536.0 / 2.0)
 }
 
+fn float_sample_to_pcm(sample: f32) -> (u8, u8) {
+    let as_i16 = (sample.clamp(-1.0, 1.0) * i16::MAX as f32) as i16;
+    let [a, b] = as_i16.to_le_bytes();
+    (a, b)
+}
+
 fn init(handle: InitHandle) {
     handle.add_class::<MusicClip>();
+    handle.add_class::<ProvidedMusicClip>();
 }
 
 godot_init!(init);
