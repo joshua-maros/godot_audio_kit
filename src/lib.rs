@@ -10,8 +10,6 @@ use gdnative::{
     prelude::*,
 };
 
-const GET: i32 = 700;
-
 #[derive(NativeClass)]
 #[inherit(Resource)]
 pub struct HelloWorld;
@@ -55,10 +53,6 @@ impl ProvidedMusicClip {
         let mut float_data = Vec::new();
         let audio_stream = unsafe { self.audio_stream.assume_safe() };
         let pcm_data = audio_stream.data();
-        let mut d = Vec::new();
-        for index in GET..GET + 16 {
-            d.push(pcm_data.get(index));
-        }
         for sample_index in 0..pcm_data.len() / 4 {
             let [b0, b1, b2, b3] = [
                 pcm_data.get(sample_index * 4 + 0),
@@ -164,10 +158,6 @@ impl MusicClip {
                 data.push(a);
                 data.push(b);
             }
-            let mut d = Vec::new();
-            for index in GET..GET + 16 {
-                d.push(data.get(index));
-            }
             unsafe { self.audio_stream.assume_safe() }.set_data(data);
         }
         let output = unsafe { output.assume_safe() };
@@ -180,7 +170,7 @@ impl MusicClip {
         audio.set_loop_begin(self.first_beat_sample as _);
         let duration = self.num_samples() - self.first_beat_sample as usize;
         let end =
-            self.first_beat_sample as usize + duration - duration % self.samples_per_beat as usize;
+            self.first_beat_sample as usize + duration - duration % (self.samples_per_beat as usize / 8);
         audio.set_loop_end(end as _);
         audio.set_loop_mode(if looping {
             LoopMode::FORWARD.0
@@ -256,6 +246,7 @@ impl MusicClip {
     #[method]
     fn mixdown(&mut self, sources: Vec<Instance<MusicClip>>, start: f64, end: f64) {
         assert!(sources.len() > 0);
+        self.extend(end);
         let start = self.beat_to_sample(start);
         let end = self.beat_to_sample(end);
         let source_refs: Vec<_> = sources.iter().map(|s| unsafe { s.assume_safe() }).collect();
@@ -264,7 +255,7 @@ impl MusicClip {
             source
                 .map(|clip, _| {
                     assert_eq!(clip.samples_per_beat, samples_per_beat);
-                    for index in start..end {
+                    for index in start..end.min(clip.audio_data.len()) {
                         let source = clip.audio_data[index];
                         let target = &mut self.audio_data;
                         target[index].0 += source.0;
