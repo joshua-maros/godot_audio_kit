@@ -215,9 +215,8 @@ impl MusicClip {
         source: Instance<MusicClip>,
         source_start: f64,
         source_end: f64,
-        pitch: f64,
+        pitch: f32,
     ) {
-        assert_eq!(pitch, 1.0);
         let target_start = self.beat_to_sample(target_start);
         let source = unsafe { source.assume_safe() };
         let source_start = source
@@ -232,8 +231,8 @@ impl MusicClip {
                 let target_audio = &mut self.audio_data;
 
                 let source_len = source_end - source_start;
-                let source_len = source_len.min(source.num_samples() - source_start);
-                let target_len = source_len;
+                let source_len = source_len.min(source.num_samples() - source_start - 1);
+                let target_len = (source_len as f32 / pitch) as usize;
                 let target_end = target_start + target_len;
 
                 if target_audio.len() < target_end {
@@ -241,13 +240,50 @@ impl MusicClip {
                 }
 
                 for offset in 0..target_len {
-                    let source_index = source_start + offset;
+                    let source_index = source_start as f32 + (offset as f32 * pitch);
                     let target_index = target_start + offset;
-                    target_audio[target_index] = source_audio[source_index];
+                    target_audio[target_index] = lerp_samples(
+                        source_audio[source_index.floor() as usize],
+                        source_audio[source_index.ceil() as usize],
+                        source_index % 1.0,
+                    );
                 }
             })
             .unwrap();
         self.audio_stream_dirty = true;
+    }
+
+    #[method]
+    fn mixdown(&mut self, sources: Vec<Instance<MusicClip>>, start: f64, end: f64) {
+        assert!(sources.len() > 0);
+        let start = self.beat_to_sample(start);
+        let end = self.beat_to_sample(end);
+        let source_refs: Vec<_> = sources.iter().map(|s| unsafe { s.assume_safe() }).collect();
+        let samples_per_beat = source_refs[0].map(|clip, _| clip.samples_per_beat).unwrap();
+        for source in &source_refs {
+            source
+                .map(|clip, _| {
+                    assert_eq!(clip.samples_per_beat, samples_per_beat);
+                    for index in start..end {
+                        let source = clip.audio_data[index];
+                        let target = &mut self.audio_data;
+                        target[index].0 += source.0;
+                        target[index].1 += source.1;
+                    }
+                })
+                .unwrap();
+        }
+        self.audio_stream_dirty = true;
+    }
+
+    #[method]
+    fn extend(&mut self, duration: f64) {
+        let duration = self.beat_to_sample(duration);
+        let target_audio = &mut self.audio_data;
+
+        if target_audio.len() < duration {
+            target_audio.resize(duration, (0.0, 0.0));
+        }
     }
 
     #[method]
@@ -286,6 +322,10 @@ fn float_sample_to_pcm(sample: f32) -> (u8, u8) {
     let as_i16 = (sample.clamp(-1.0, 1.0) * i16::MAX as f32) as i16;
     let [a, b] = as_i16.to_le_bytes();
     (a, b)
+}
+
+fn lerp_samples(a: (f32, f32), b: (f32, f32), f: f32) -> (f32, f32) {
+    (a.0 + (b.0 - a.0) * f, a.1 + (b.1 - a.1) * f)
 }
 
 fn init(handle: InitHandle) {
