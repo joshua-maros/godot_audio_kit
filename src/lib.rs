@@ -169,8 +169,8 @@ impl MusicClip {
         let audio = unsafe { self.audio_stream.assume_safe() };
         audio.set_loop_begin(self.first_beat_sample as _);
         let duration = self.num_samples() - self.first_beat_sample as usize;
-        let end =
-            self.first_beat_sample as usize + duration - duration % (self.samples_per_beat as usize / 8);
+        let end = self.first_beat_sample as usize + duration
+            - duration % (self.samples_per_beat as usize / 8);
         audio.set_loop_end(end as _);
         audio.set_loop_mode(if looping {
             LoopMode::FORWARD.0
@@ -189,6 +189,49 @@ impl MusicClip {
         let start_sample = self.beat_to_sample(start);
         let end_sample = self.beat_to_sample(end);
         let audio_data = Vec::from(&self.audio_data[start_sample..end_sample]);
+        Instance::emplace(Self {
+            audio_data,
+            audio_stream: make_default_audio_stream(),
+            audio_stream_dirty: true,
+            samples_per_beat: self.samples_per_beat,
+            first_beat_sample: 0,
+        })
+    }
+
+    #[method]
+    fn delay(&self) -> Instance<Self, Unique> {
+        let step = self.samples_per_beat as usize * 3 / 4;
+        let decay = 0.4;
+        let mut audio_data: Vec<_> = self
+            .audio_data
+            .iter()
+            .map(|x| (x.0 * (1.0 - decay), x.1 * (1.0 - decay)))
+            .collect();
+        for sample in step..self.audio_data.len() {
+            let prev = audio_data[sample - self.samples_per_beat as usize * 3 / 4];
+            audio_data[sample].0 += prev.0 * decay;
+            audio_data[sample].1 += prev.1 * decay;
+        }
+        Instance::emplace(Self {
+            audio_data,
+            audio_stream: make_default_audio_stream(),
+            audio_stream_dirty: true,
+            samples_per_beat: self.samples_per_beat,
+            first_beat_sample: 0,
+        })
+    }
+
+    #[method]
+    fn distort(&self) -> Instance<Self, Unique> {
+        let map = |x: f32| {
+            let e3x = (x * 3.0).exp();
+            2.0 * (e3x / (e3x + 1.0)) - 1.0
+        };
+        let audio_data = self
+            .audio_data
+            .iter()
+            .map(|x| (map(x.0), map(x.1)))
+            .collect();
         Instance::emplace(Self {
             audio_data,
             audio_stream: make_default_audio_stream(),
